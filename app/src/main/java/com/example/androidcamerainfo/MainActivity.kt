@@ -122,14 +122,122 @@ fun CameraReportScreen() {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item { DeviceCard(report) }
+            item { SummaryCard(report) }
+            item {
+                Text(
+                    "Per-camera details",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
             items(report.cameras) { camera -> CameraCard(camera) }
+        }
+    }
+}
+
+private data class CheckItem(val label: String, val value: String, val ok: Boolean?)
+
+private fun buildChecks(report: DeviceReport): List<CheckItem> {
+    val cameras = report.cameras
+    val front = cameras.filter { it.facing == "FRONT" }
+    val back = cameras.filter { it.facing == "BACK" }
+    val allSizes = cameras.flatMap { c -> c.recordingSizes.map { it.size } }
+    val maxRes = allSizes.maxByOrNull { it.width * it.height }
+    val targetFps = cameras.mapNotNull { c ->
+        c.recordingSizes.firstOrNull { it.isTarget && it.maxFps > 0 }?.maxFps
+    }.maxOrNull()
+    val anyHighSpeed = cameras.any { it.highSpeed.isNotEmpty() }
+    val logicalMulti = cameras.any { it.physicalIds.isNotEmpty() }
+    val fullOrBetter = cameras.count {
+        it.hardwareLevel == "FULL" || it.hardwareLevel == "LEVEL_3"
+    }
+
+    return listOf(
+        CheckItem("Back camera", if (back.isNotEmpty()) "${back.size} found" else "Not found", back.isNotEmpty()),
+        CheckItem("Front camera", if (front.isNotEmpty()) "${front.size} found" else "Not found", front.isNotEmpty()),
+        CheckItem(
+            "640×480 recording (required by vyn)",
+            when {
+                cameras.isEmpty() -> "No cameras"
+                cameras.all { it.supportsTarget } -> "All cameras ✓"
+                else -> cameras.filter { it.supportsTarget }
+                    .joinToString { "Camera ${it.id}" }
+                    .ifEmpty { "NOT SUPPORTED" }
+            },
+            if (cameras.isEmpty()) null else cameras.all { it.supportsTarget }
+        ),
+        CheckItem(
+            "FPS at 640×480",
+            if (targetFps != null) "up to ${targetFps}fps" else "n/a",
+            targetFps?.let { it >= 30 }
+        ),
+        CheckItem(
+            "Highest recording resolution",
+            maxRes?.let { "${it.width}×${it.height}" } ?: "unknown",
+            null
+        ),
+        CheckItem("Slow-motion (high-speed) video", if (anyHighSpeed) "Supported" else "Not supported", anyHighSpeed),
+        CheckItem(
+            "Multi-camera (logical)",
+            if (logicalMulti) "Yes — zoom switching supported" else "No",
+            null
+        ),
+        CheckItem(
+            "Camera hardware level",
+            when {
+                fullOrBetter == cameras.size && cameras.isNotEmpty() -> "FULL/LEVEL_3 on all"
+                fullOrBetter > 0 -> "FULL on $fullOrBetter of ${cameras.size}"
+                else -> "LIMITED/LEGACY"
+            },
+            if (cameras.isEmpty()) null else fullOrBetter == cameras.size
+        )
+    )
+}
+
+@Composable
+private fun SummaryCard(report: DeviceReport) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "What this device supports",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(8.dp))
+            buildChecks(report).forEach { item ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 3.dp)
+                ) {
+                    when (item.ok) {
+                        true -> Text("✓", color = VerdictYes, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
+                        false -> Text("✗", color = VerdictNo, fontWeight = FontWeight.Bold, modifier = Modifier.width(22.dp))
+                        null -> Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(22.dp))
+                    }
+                    Text(item.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    Text(
+                        item.value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = when (item.ok) {
+                            true -> VerdictYes
+                            false -> VerdictNo
+                            null -> MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun DeviceCard(report: DeviceReport) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
         Column(Modifier.padding(16.dp)) {
             Text("Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
@@ -348,6 +456,16 @@ fun DeviceReport.toText(): String {
     out.appendLine("=== Device ===")
     out.appendLine(device)
     out.appendLine(android)
+    out.appendLine()
+    out.appendLine("=== Summary: what this device supports ===")
+    buildChecks(this).forEach { item ->
+        val mark = when (item.ok) {
+            true -> "[OK]"
+            false -> "[FAIL]"
+            null -> "[--]"
+        }
+        out.appendLine("$mark ${item.label}: ${item.value}")
+    }
     out.appendLine()
     out.appendLine("=== Cameras: ${cameras.size} ===")
     for (camera in cameras) {
